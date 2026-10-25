@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星图编辑器 // 箱庭指令</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 左侧画布 -->
+    <div class="canvas-container">
+        <canvas id="editCanvas"></canvas>
+        <div class="status-bar" id="statusBar">🖐️ 选择模式</div>
+        <a href="index.html" class="btn btn-primary" style="position:absolute; top:20px; left:20px; width:auto;">🔙 返回视图</a>
+    </div>
+
+    <!-- 右侧侧边栏 -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>星图编辑器</h1>
+        </div>
+        <div class="sidebar-content">
+            
+            <div class="control-group">
+                <h2>操作模式</h2>
+                <select id="modeSelect">
+                    <option value="select">🖐️ 选择/拖拽/编辑</option>
+                    <option value="add-planet">🪐 添加星球</option>
+                    <option value="add-supply">🔗 连接补给线</option>
+                    <option value="add-sector">🔲 圈定星区</option>
+                </select>
+            </div>
+
+            <!-- 星球编辑区 -->
+            <div class="control-group" id="editPlanetPanel" style="display:none; border-color: var(--accent);">
+                <h2 style="color: var(--accent);">正在编辑星球</h2>
+                <div class="field"><label>英文名</label><input type="text" id="editNameEn" oninput="updatePlanetData()"></div>
+                <div class="field"><label>中文名</label><input type="text" id="editNameCn" oninput="updatePlanetData()"></div>
+                <div class="field">
+                    <label>所属势力</label>
+                    <select id="editFaction" onchange="updatePlanetData()"></select>
+                </div>
+                <button class="btn btn-small" onclick="deselectPlanet()">完成编辑</button>
+            </div>
+
+            <!-- 列表 -->
+            <div class="control-group">
+                <h2>星球列表</h2>
+                <div id="planetList" style="max-height: 150px; overflow-y: auto;"></div>
+            </div>
+
+            <div class="control-group">
+                <h2>星区列表</h2>
+                <div id="sectorList" style="max-height: 100px; overflow-y: auto;"></div>
+            </div>
+
+            <div class="control-group">
+                <h2>补给线列表</h2>
+                <div id="supplyList" style="max-height: 100px; overflow-y: auto;"></div>
+            </div>
+
+            <!-- 势力管理 -->
+            <div class="control-group">
+                <h2>势力管理</h2>
+                <div id="factionList" style="max-height: 120px; overflow-y: auto; margin-bottom: 10px;"></div>
+                <div class="row">
+                    <div class="field"><input type="text" id="newFactEn" placeholder="英文名"></div>
+                    <div class="field"><input type="text" id="newFactCn" placeholder="中文名"></div>
+                </div>
+                <div class="row">
+                    <div class="field"><input type="color" id="newFactColor" value="#ff0000" style="height:33px; padding:2px; cursor:pointer;"></div>
+                    <div class="field" style="flex: 0.5;"><button class="btn" style="margin:0; height:33px;" onclick="addFaction()">添加</button></div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h2>数据操作</h2>
+                <button class="btn btn-accent" onclick="saveToDataJS()">💾 保存并应用到网站</button>
+                <button class="btn" onclick="document.getElementById('importFile').click()">📤 导入外部数据</button>
+                <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(this)">
+            </div>
+
+        </div>
+    </div>
+
+    <script src="map.js"></script>
+    <script src="mapEdit.js"></script>
+</body>
+</html>

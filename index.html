@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星图总览 // 箱庭指令</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="canvas-container">
+        <canvas id="viewCanvas"></canvas>
+        <div class="header-overlay">
+            <h1>STAR MAP</h1>
+            <p>银河系星区战略部署图</p>
+        </div>
+        <!-- 快捷跳转编辑器的按钮 -->
+        <a href="mapEdit.html" class="btn btn-accent" style="position:absolute; top:20px; right:20px; width:auto; z-index:10;">⚙️ 进入地图编辑器</a>
+    </div>
+
+    <script src="data.js"></script>
+    <script src="map.js"></script>
+    <script>
+        const canvas = document.getElementById('viewCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function resize() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+            drawMap(ctx, canvas.width, canvas.height, window.MAP_DATA);
+        }
+        
+        window.addEventListener('resize', resize);
+        resize(); // 初始化
+    </script>
+</body>
+</html>
