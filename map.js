@@ -1,21 +1,8 @@
-// 计算凸包 (Andrew's monotone chain algorithm)
-function getConvexHull(points) {
-    if (points.length <= 2) return points;
-    let sorted = points.slice().sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
-    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    let lower = [];
-    for (let i = 0; i < sorted.length; i++) {
-        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], sorted[i]) <= 0) lower.pop();
-        lower.push(sorted[i]);
-    }
-    let upper = [];
-    for (let i = sorted.length - 1; i >= 0; i--) {
-        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], sorted[i]) <= 0) upper.pop();
-        upper.push(sorted[i]);
-    }
-    upper.pop();
-    lower.pop();
-    return lower.concat(upper);
+// 将角度标准化到 [0, 2*PI]
+function normalizeAngle(a) {
+    while (a < 0) a += Math.PI * 2;
+    while (a >= Math.PI * 2) a -= Math.PI * 2;
+    return a;
 }
 
 function drawMap(ctx, width, height, data, view) {
@@ -32,100 +19,150 @@ function drawMap(ctx, width, height, data, view) {
     const invScale = 1 / (view ? view.scale : 1);
 
     const mapCenter = { x: 0, y: 0 }; 
-    const mapRadius = 1600; 
+    const mapRadius = 1600; // 边界大圆
+    const innerRadius = 120; // 中心地球的空白区
 
-    // 1. 画最外层大圆
+    // 1. 画最外层的圆形边界
     ctx.beginPath();
     ctx.arc(mapCenter.x, mapCenter.y, mapRadius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 2. 画星区（纯领地边界，绝对不连内部）
-    sectors.forEach(sector => {
+    // 画内层大圆
+    ctx.beginPath();
+    ctx.arc(mapCenter.x, mapCenter.y, innerRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 2 * invScale;
+    ctx.stroke();
+
+    // --- 核心新增：星区防重叠角度计算 ---
+    // 先提取所有星区的初始角度区间
+    let sectorData = [];
+    sectors.forEach((sector, index) => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
-        if (pts.length > 0) {
-            let sectorFactionId = 'super_earth';
-            for (let i = 0; i < pts.length; i++) {
-                if (pts[i].factionId !== 'super_earth') { sectorFactionId = pts[i].factionId; break; }
+        if (pts.length === 0) return;
+
+        let angles = [];
+        let maxRadius = 0;
+        
+        pts.forEach(p => {
+            const dx = p.x - mapCenter.x;
+            const dy = p.y - mapCenter.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist > maxRadius) maxRadius = dist;
+            angles.push(normalizeAngle(Math.atan2(dy, dx)));
+        });
+
+        angles.sort((a, b) => a - b);
+
+        let maxGapVal = -1;
+        let splitIndex = -1;
+        for (let i = 0; i < angles.length; i++) {
+            const next = (i + 1) % angles.length;
+            let gap = angles[next] - angles[i];
+            if (gap < 0) gap += Math.PI * 2;
+            if (gap > maxGapVal) {
+                maxGapVal = gap;
+                splitIndex = next;
             }
-            const factionColor = getFaction(sectorFactionId).color;
-
-            if (pts.length === 1) {
-                // 单颗星球画圆
-                ctx.beginPath();
-                ctx.arc(pts[0].x, pts[0].y, 60, 0, Math.PI * 2);
-                ctx.fillStyle = factionColor + '08';
-                ctx.fill();
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-                ctx.lineWidth = 1 * invScale;
-                ctx.stroke();
-            } else {
-                // 多颗星球计算凸包，并向四周推离 60 像素作为安全区
-                const hull = getConvexHull(pts);
-                let padded = [];
-                
-                // 计算凸包的中心点
-                let cx = 0, cy = 0;
-                hull.forEach(p => { cx += p.x; cy += p.y; });
-                cx /= hull.length;
-                cy /= hull.length;
-
-                // 将凸包的每个点向外推
-                hull.forEach(p => {
-                    const dx = p.x - cx;
-                    const dy = p.y - cy;
-                    const len = Math.hypot(dx, dy) || 1;
-                    const pad = 60; // 安全内圈距离
-                    padded.push({ x: p.x + (dx / len) * pad, y: p.y + (dy / len) * pad });
-                });
-
-                // 绘制多边形领地
-                ctx.beginPath();
-                ctx.moveTo(padded[0].x, padded[0].y);
-                for (let i = 1; i < padded.length; i++) {
-                    ctx.lineTo(padded[i].x, padded[i].y);
-                }
-                ctx.closePath();
-
-                ctx.fillStyle = factionColor + '08'; // 极淡的填充底色
-                ctx.fill();
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'; // 边界线
-                ctx.lineWidth = 1 * invScale;
-                ctx.stroke();
-
-                // 可选：如果你希望领地像原图一样向外延伸切割，可以取消下面这段注释
-                // 这会在领地边缘画出放射线，像切披萨一样连到外围
-                /*
-                padded.forEach(p => {
-                    const dx = p.x - mapCenter.x;
-                    const dy = p.y - mapCenter.y;
-                    const len = Math.hypot(dx, dy) || 1;
-                    ctx.beginPath();
-                    ctx.moveTo(p.x, p.y);
-                    ctx.lineTo(mapCenter.x + (dx / len) * mapRadius, mapCenter.y + (dy / len) * mapRadius);
-                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)'; // 极淡的延伸线
-                    ctx.lineWidth = 1 * invScale;
-                    ctx.stroke();
-                });
-                */
-            }
-
-            // 绘制星区名字
-            let minY = Infinity;
-            let sumX = 0;
-            pts.forEach(p => {
-                if (p.y < minY) minY = p.y;
-                sumX += p.x;
-            });
-            ctx.fillStyle = factionColor;
-            ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.fillText(sector.name, sumX / pts.length, minY - 40 * invScale);
         }
+        
+        let minAngle = angles[splitIndex];
+        let maxAngle = angles[(splitIndex - 1 + angles.length) % angles.length];
+
+        let angleDiff = maxAngle - minAngle;
+        if (angleDiff < 0) angleDiff += Math.PI * 2;
+
+        // 保底展开角度
+        if (angleDiff < 0.15) {
+            let mid = minAngle + angleDiff / 2;
+            minAngle = mid - 0.075;
+            maxAngle = mid + 0.075;
+            angleDiff = 0.15;
+        }
+
+        // 给一点基础留白
+        minAngle -= 0.02;
+        maxAngle += 0.02;
+
+        sectorData.push({
+            sector, pts, maxRadius, minAngle, maxAngle
+        });
     });
 
-    // 3. 画补给线（星球之间唯一的实线）
+    // 按起始角度排序，解决重叠
+    sectorData.sort((a, b) => {
+        // 处理跨越0度的问题，统一转成连续角度排序
+        let aStart = a.minAngle < 0 ? a.minAngle + Math.PI * 2 : a.minAngle;
+        let bStart = b.minAngle < 0 ? b.minAngle + Math.PI * 2 : b.minAngle;
+        return aStart - bStart;
+    });
+
+    // 强制推开相邻重叠的星区
+    for (let i = 0; i < sectorData.length; i++) {
+        let current = sectorData[i];
+        let next = sectorData[(i + 1) % sectorData.length];
+        
+        let currentMax = current.maxAngle;
+        let nextMin = next.minAngle;
+
+        // 处理跨越 0 度的情况
+        if (currentMax < current.minAngle) currentMax += Math.PI * 2; 
+        if (nextMin < next.minAngle) nextMin += Math.PI * 2; 
+
+        // 如果当前星区的末尾大于下一个星区的开头，说明重叠了
+        if (currentMax > nextMin && i !== sectorData.length - 1) {
+            // 计算重叠了多少，各退一步
+            let overlap = currentMax - nextMin;
+            current.maxAngle -= overlap / 2;
+            next.minAngle += overlap / 2;
+        }
+    }
+
+    // 2. 画星区
+    sectorData.forEach(data => {
+        let { sector, pts, maxRadius, minAngle, maxAngle } = data;
+
+        let sectorFactionId = 'super_earth';
+        for (let i = 0; i < pts.length; i++) {
+            if (pts[i].factionId !== 'super_earth') { sectorFactionId = pts[i].factionId; break; }
+        }
+        const factionColor = getFaction(sectorFactionId).color;
+
+        // 重新计算确保角度正确
+        let angleDiff = maxAngle - minAngle;
+        if (angleDiff < 0) angleDiff += Math.PI * 2;
+
+        // 内圈半径：最大星球距离 + 120 像素留白，确保绝对包裹所有星球
+        const r_in = Math.max(innerRadius, maxRadius + 120);
+        const r_out = mapRadius; 
+
+        // 绘制扇形色块
+        ctx.beginPath();
+        ctx.arc(mapCenter.x, mapCenter.y, r_in, minAngle, maxAngle);
+        ctx.arc(mapCenter.x, mapCenter.y, r_out, maxAngle, minAngle, true);
+        ctx.closePath();
+
+        ctx.fillStyle = factionColor + '0A'; // 极淡底色
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'; // 白色边界
+        ctx.lineWidth = 1 * invScale;
+        ctx.stroke();
+
+        // 绘制星区名字
+        const textAngle = minAngle + angleDiff / 2;
+        const textR = maxRadius + 40; 
+        const textX = mapCenter.x + Math.cos(textAngle) * textR;
+        const textY = mapCenter.y + Math.sin(textAngle) * textR;
+        
+        ctx.fillStyle = factionColor;
+        ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(sector.name, textX, textY);
+    });
+
+    // 3. 画补给线（实线，双色）
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
