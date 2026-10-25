@@ -1,13 +1,42 @@
-// 计算弧度
-function getAngle(p1, p2) {
-    return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+// 计算凸包 (Andrew's monotone chain algorithm)
+function getConvexHull(points) {
+    if (points.length <= 2) return points;
+    let sorted = points.slice().sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let lower = [];
+    for (let i = 0; i < sorted.length; i++) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], sorted[i]) <= 0) lower.pop();
+        lower.push(sorted[i]);
+    }
+    let upper = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], sorted[i]) <= 0) upper.pop();
+        upper.push(sorted[i]);
+    }
+    upper.pop();
+    lower.pop();
+    return lower.concat(upper);
 }
 
-// 将角度标准化到 [-PI, PI]
-function normalizeAngle(a) {
-    while (a <= -Math.PI) a += Math.PI * 2;
-    while (a > Math.PI) a -= Math.PI * 2;
-    return a;
+// 射线与圆求交点（限制不出圈）
+function getRayCircleIntersect(start, dir, center, radius) {
+    const dx = dir.x - start.x;
+    const dy = dir.y - start.y;
+    const fx = start.x - center.x;
+    const fy = start.y - center.y;
+    const a = dx*dx + dy*dy;
+    const b = 2 * (fx*dx + fy*dy);
+    const c = fx*fx + fy*fy - radius*radius;
+    let discriminant = b*b - 4*a*c;
+    if (discriminant >= 0) {
+        discriminant = Math.sqrt(discriminant);
+        let t1 = (-b - discriminant) / (2*a);
+        let t2 = (-b + discriminant) / (2*a);
+        let t = Math.max(t1, t2);
+        if (t < 0) t = Math.min(t1, t2);
+        if (t > 0) return { x: start.x + t * dx, y: start.y + t * dy };
+    }
+    return null;
 }
 
 function drawMap(ctx, width, height, data, view) {
@@ -24,24 +53,16 @@ function drawMap(ctx, width, height, data, view) {
     const invScale = 1 / (view ? view.scale : 1);
 
     const mapCenter = { x: 0, y: 0 }; 
-    const mapRadius = 1600; // 边界大圆
-    const innerRadius = 120; // 中间地球的空白区
+    const mapRadius = 1600; // 最外层大圆
 
-    // 1. 画最外层的圆形边界
+    // 1. 画最外层和中心圆圈
     ctx.beginPath();
     ctx.arc(mapCenter.x, mapCenter.y, mapRadius, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 画内层大圆（可选，为了美观）
-    ctx.beginPath();
-    ctx.arc(mapCenter.x, mapCenter.y, innerRadius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-    ctx.lineWidth = 2 * invScale;
-    ctx.stroke();
-
-    // 2. 画星区（披萨切割法）
+    // 2. 画星区
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
@@ -51,78 +72,72 @@ function drawMap(ctx, width, height, data, view) {
             }
             const factionColor = getFaction(sectorFactionId).color;
 
-            // 计算所有星球的极角和极径
-            let minAngle = Math.PI * 2;
-            let maxAngle = -Math.PI * 2;
-            let maxRadius = 0;
+            // 计算凸包
+            const hull = pts.length > 2 ? getConvexHull(pts) : pts;
+            
+            // 计算星区重心
+            let centroid = { x: 0, y: 0 };
+            pts.forEach(p => { centroid.x += p.x; centroid.y += p.y; });
+            centroid.x /= pts.length;
+            centroid.y /= pts.length;
 
-            pts.forEach(p => {
-                const dx = p.x - mapCenter.x;
-                const dy = p.y - mapCenter.y;
-                const dist = Math.hypot(dx, dy);
-                if (dist > maxRadius) maxRadius = dist;
-
-                let angle = Math.atan2(dy, dx);
-                // 处理跨越 -PI 和 PI 边界的情况 (比如在正左方)
-                if (angle < 0 && maxAngle > Math.PI / 2) angle += Math.PI * 2;
-                if (angle > 0 && minAngle < -Math.PI / 2) angle -= Math.PI * 2;
-
-                if (angle < minAngle) minAngle = angle;
-                if (angle > maxAngle) maxAngle = angle;
+            // 核心：把凸包的点向四周大幅推开（Pad = 150），确保绝对把星球包在内部
+            const safeHull = hull.map(p => {
+                const dx = p.x - centroid.x;
+                const dy = p.y - centroid.y;
+                const len = Math.hypot(dx, dy) || 1;
+                const pad = 150; 
+                return { x: p.x + (dx / len) * pad, y: p.y + (dy / len) * pad };
             });
 
-            // 如果只跨越了一个很小的区域（或者只有1颗星球），给个默认角度展开
-            if (maxAngle - minAngle < 0.2) {
-                const mid = (minAngle + maxAngle) / 2;
-                minAngle = mid - 0.2;
-                maxAngle = mid + 0.2;
+            // 如果安全的框不到 3 个点（比如只有单颗或两颗星球），画个圆
+            if (safeHull.length < 3) {
+                ctx.beginPath();
+                ctx.arc(centroid.x, centroid.y, 120, 0, Math.PI * 2);
+                ctx.fillStyle = factionColor + '0A';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+                ctx.lineWidth = 1 * invScale;
+                ctx.stroke();
+            } else {
+                // 画星区色块
+                ctx.beginPath();
+                ctx.moveTo(safeHull[0].x, safeHull[0].y);
+                for (let i = 1; i < safeHull.length; i++) {
+                    ctx.lineTo(safeHull[i].x, safeHull[i].y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = factionColor + '0A';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+                ctx.lineWidth = 1 * invScale;
+                ctx.stroke();
+
+                // 延伸边界线到外圈（做出扇形切分感）
+                safeHull.forEach(p => {
+                    // 从重心穿过边界点，发射到外圆
+                    const intersect = getRayCircleIntersect(p, { x: p.x - centroid.x, y: p.y - centroid.y }, mapCenter, mapRadius);
+                    if (intersect) {
+                        ctx.beginPath();
+                        ctx.moveTo(p.x, p.y);
+                        ctx.lineTo(intersect.x, intersect.y);
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                        ctx.lineWidth = 1 * invScale;
+                        ctx.stroke();
+                    }
+                });
             }
 
-            // 强制外扩角度（不贴边）
-            minAngle -= 0.1;
-            maxAngle += 0.1;
-
-            // 计算边界坐标点
-            const r_in = Math.max(innerRadius, maxRadius - 100); // 内部切割点
-            const r_out = mapRadius; // 外部大圆
-
-            const p1_in = { x: Math.cos(minAngle) * r_in, y: Math.sin(minAngle) * r_in };
-            const p2_in = { x: Math.cos(maxAngle) * r_in, y: Math.sin(maxAngle) * r_in };
-            const p1_out = { x: Math.cos(minAngle) * r_out, y: Math.sin(minAngle) * r_out };
-            const p2_out = { x: Math.cos(maxAngle) * r_out, y: Math.sin(maxAngle) * r_out };
-
-            // 绘制多边形色块
-            ctx.beginPath();
-            // 内圈弧线
-            ctx.arc(mapCenter.x, mapCenter.y, r_in, minAngle, maxAngle);
-            // 向外射线
-            ctx.lineTo(p2_out.x, p2_out.y);
-            // 外圈大弧线 (可选，如果直接连直线就是直线，这里沿外圈画弧线)
-            ctx.arc(mapCenter.x, mapCenter.y, r_out, maxAngle, minAngle, true);
-            ctx.closePath();
-
-            ctx.fillStyle = factionColor + '0A'; // 极淡的底色
-            ctx.fill();
-            
-            // 边界线（白色实线）
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-            ctx.lineWidth = 1 * invScale;
-            ctx.stroke();
-
-            // 绘制星区名字 (放在中心角度，最远距离稍外的位置)
-            const midAngle = (minAngle + maxAngle) / 2;
-            const textR = maxRadius + 40;
-            const textX = Math.cos(midAngle) * textR;
-            const textY = Math.sin(midAngle) * textR;
-            
+            // 绘制星区名字
             ctx.fillStyle = factionColor;
             ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(sector.name, textX, textY);
+            // 名字放在重心上方
+            ctx.fillText(sector.name, centroid.x, centroid.y - 60 * invScale);
         }
     });
 
-    // 3. 画补给线（实线，双色）
+    // 3. 画补给线（星球之间相连的实线，不连中心）
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
