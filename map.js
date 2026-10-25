@@ -1,10 +1,3 @@
-// 计算角度并规范化到 0 ~ 2PI
-function normalizeAngle(a) {
-    while (a < 0) a += Math.PI * 2;
-    while (a >= Math.PI * 2) a -= Math.PI * 2;
-    return a;
-}
-
 function drawMap(ctx, width, height, data, view) {
     ctx.clearRect(0, 0, width, height);
     
@@ -19,10 +12,10 @@ function drawMap(ctx, width, height, data, view) {
     const invScale = 1 / (view ? view.scale : 1);
 
     const mapCenter = { x: 0, y: 0 }; 
-    const mapRadius = 1600; // 最外圈大圆
-    const innerRadius = 200; // 中间内圈（地球所在地）
+    const mapRadius = 1600; 
+    const innerRadius = 200; 
 
-    // 1. 画边界圆
+    // 1. 画最外层和中心圆圈
     ctx.beginPath();
     ctx.arc(mapCenter.x, mapCenter.y, mapRadius, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
@@ -35,7 +28,7 @@ function drawMap(ctx, width, height, data, view) {
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 2. 画星区（无缝扇形切分）
+    // 2. 画星区（无重叠智能切割）
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
@@ -45,27 +38,24 @@ function drawMap(ctx, width, height, data, view) {
             }
             const factionColor = getFaction(sectorFactionId).color;
 
-            // 计算所有星球的角度和最大半径
             let angles = [];
-            let maxRadius = innerRadius;
+            let maxDist = 0;
 
             pts.forEach(p => {
                 const dx = p.x - mapCenter.x;
                 const dy = p.y - mapCenter.y;
                 const dist = Math.hypot(dx, dy);
-                if (dist > maxRadius) maxRadius = dist;
-                angles.push(normalizeAngle(Math.atan2(dy, dx)));
+                if (dist > maxDist) maxDist = dist;
+
+                let angle = Math.atan2(dy, dx);
+                if (angle < 0) angle += Math.PI * 2;
+                angles.push(angle);
             });
 
             angles.sort((a, b) => a - b);
 
-            // 寻找跨越 0 度边界的最小扇形包含区
-            let minAngle = angles[0];
-            let maxAngle = angles[angles.length - 1];
             let maxGap = -1;
             let splitIndex = 0;
-
-            // 找最大的空隙（这个空隙就是星区不包含的部分）
             for (let i = 0; i < angles.length; i++) {
                 const next = (i + 1) % angles.length;
                 let gap = angles[next] - angles[i];
@@ -76,53 +66,40 @@ function drawMap(ctx, width, height, data, view) {
                 }
             }
 
-            // 确定扇形的起始角和结束角
-            minAngle = angles[splitIndex];
-            maxAngle = angles[(splitIndex - 1 + angles.length) % angles.length];
-
+            let minAngle = angles[splitIndex];
+            let maxAngle = angles[(splitIndex - 1 + angles.length) % angles.length];
             let angleDiff = maxAngle - minAngle;
             if (angleDiff < 0) angleDiff += Math.PI * 2;
 
-            // 强制给一个最小宽度，防止单颗星球变成一条细线
-            if (angleDiff < 0.2) {
-                const mid = minAngle + angleDiff / 2;
-                minAngle = mid - 0.1;
-                maxAngle = mid + 0.1;
-                angleDiff = 0.2;
+            // 默认给一个宽度
+            if (angleDiff < 0.15) {
+                let mid = minAngle + angleDiff / 2;
+                minAngle = mid - 0.075;
+                maxAngle = mid + 0.075;
+                angleDiff = 0.15;
             }
 
-            // 边缘留白（防止贴边）
-            const anglePadding = 0.06;
-            minAngle -= anglePadding;
-            maxAngle += anglePadding;
+            const r_in = innerRadius;
+            const r_out = mapRadius;
 
-            // 核心视觉：内圈半径（设置一段强制安全距离，但保留切分感）
-            const r_in = innerRadius; 
-            const r_out = mapRadius; 
-
-            // 画星区区块
+            // 绘制扇形色块
             ctx.beginPath();
-            // 1. 内圈弧线
             ctx.arc(mapCenter.x, mapCenter.y, r_in, minAngle, maxAngle);
-            // 2. 右侧切割线
-            ctx.lineTo(Math.cos(maxAngle) * r_out, Math.sin(maxAngle) * r_out);
-            // 3. 外圈大弧线（反向）
             ctx.arc(mapCenter.x, mapCenter.y, r_out, maxAngle, minAngle, true);
-            // 4. 闭合多边形
             ctx.closePath();
 
-            ctx.fillStyle = factionColor + '0A'; // 极淡的底色
+            ctx.fillStyle = factionColor + '0A'; // 极淡底色
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; // 整齐的白色边界线
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
             ctx.lineWidth = 1 * invScale;
             ctx.stroke();
 
-            // 绘制星区名字（放在中间角度，靠近最远的星球）
-            const midAngle = minAngle + angleDiff / 2;
-            const textR = maxRadius + 50;
-            const textX = mapCenter.x + Math.cos(midAngle) * textR;
-            const textY = mapCenter.y + Math.sin(midAngle) * textR;
-
+            // 绘制星区名字
+            const textAngle = minAngle + angleDiff / 2;
+            const textR = maxDist + 50;
+            const textX = mapCenter.x + Math.cos(textAngle) * textR;
+            const textY = mapCenter.y + Math.sin(textAngle) * textR;
+            
             ctx.fillStyle = factionColor;
             ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
             ctx.textAlign = 'center';
@@ -130,7 +107,7 @@ function drawMap(ctx, width, height, data, view) {
         }
     });
 
-    // 3. 画补给线（星球之间的连线，纯实线，双色）
+    // 3. 画补给线
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
