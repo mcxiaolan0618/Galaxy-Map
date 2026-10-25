@@ -7,14 +7,12 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- 左侧画布 -->
     <div class="canvas-container">
         <canvas id="editCanvas"></canvas>
-        <div class="status-bar" id="statusBar">🖐️ 选择模式</div>
+        <div class="status-bar" id="statusBar">🖐️ 选择/拖拽</div>
         <a href="index.html" class="btn btn-primary" style="position:absolute; top:20px; left:20px; width:auto;">🔙 返回视图</a>
     </div>
 
-    <!-- 右侧侧边栏 -->
     <div class="sidebar">
         <div class="sidebar-header">
             <h1>星图编辑器</h1>
@@ -24,14 +22,14 @@
             <div class="control-group">
                 <h2>操作模式</h2>
                 <select id="modeSelect">
-                    <option value="select">🖐️ 选择/拖拽/编辑</option>
-                    <option value="add-planet">🪐 添加星球</option>
+                    <option value="select">🖐️ 选择/拖拽</option>
+                    <option value="add-planet">🪐 快速添加星球</option>
                     <option value="add-supply">🔗 连接补给线</option>
-                    <option value="add-sector">🔲 圈定星区</option>
+                    <option value="add-sector">🔲 创建星区</option>
                 </select>
+                <p style="font-size:11px; color:#6a7480; margin-top:8px;">按住右键/中键可以平移地图，滚轮缩放。</p>
             </div>
 
-            <!-- 星球编辑区 -->
             <div class="control-group" id="editPlanetPanel" style="display:none; border-color: var(--accent);">
                 <h2 style="color: var(--accent);">正在编辑星球</h2>
                 <div class="field"><label>英文名</label><input type="text" id="editNameEn" oninput="updatePlanetData()"></div>
@@ -43,7 +41,6 @@
                 <button class="btn btn-small" onclick="deselectPlanet()">完成编辑</button>
             </div>
 
-            <!-- 列表 -->
             <div class="control-group">
                 <h2>星球列表</h2>
                 <div id="planetList" style="max-height: 150px; overflow-y: auto;"></div>
@@ -59,7 +56,6 @@
                 <div id="supplyList" style="max-height: 100px; overflow-y: auto;"></div>
             </div>
 
-            <!-- 势力管理 -->
             <div class="control-group">
                 <h2>势力管理</h2>
                 <div id="factionList" style="max-height: 120px; overflow-y: auto; margin-bottom: 10px;"></div>
@@ -72,18 +68,308 @@
                     <div class="field" style="flex: 0.5;"><button class="btn" style="margin:0; height:33px;" onclick="addFaction()">添加</button></div>
                 </div>
             </div>
-
-            <div class="control-group">
-                <h2>数据操作</h2>
-                <button class="btn btn-accent" onclick="saveToDataJS()">💾 保存并应用到网站</button>
-                <button class="btn" onclick="document.getElementById('importFile').click()">📤 导入外部数据</button>
-                <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(this)">
-            </div>
-
         </div>
     </div>
 
+    <script src="data.js"></script>
     <script src="map.js"></script>
-    <script src="mapEdit.js"></script>
+    <script>
+        const canvas = document.getElementById('editCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusBar = document.getElementById('statusBar');
+        
+        let data = window.MAP_DATA; 
+        let width, height;
+        let view = { x: 0, y: 0, scale: 1 };
+        let mode = 'select';
+        
+        let draggedPlanet = null;
+        let dragOffsetX = 0, dragOffsetY = 0;
+        let selectedPlanetId = null;
+        let supplyStart = null;
+        let sectorSelection = []; // 暂存框选的星球
+
+        let isPanning = false, panStartX = 0, panStartY = 0;
+
+        function resize() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+            width = canvas.width;
+            height = canvas.height;
+            if(view.x === 0 && view.y === 0) {
+                view.x = width / 2 - 400;
+                view.y = height / 2 - 400;
+            }
+            draw();
+        }
+        window.addEventListener('resize', resize);
+
+        function draw() {
+            drawMap(ctx, width, height, data, view);
+
+            ctx.save();
+            ctx.translate(view.x, view.y);
+            ctx.scale(view.scale, view.scale);
+            const invScale = 1 / view.scale;
+
+            // 绘制选中高亮
+            if (selectedPlanetId) {
+                const p = data.planets.find(x => x.id === selectedPlanetId);
+                if (p) {
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+                    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2 * invScale; ctx.stroke();
+                }
+            }
+            // 连线的临时高亮
+            if (supplyStart) {
+                ctx.beginPath(); ctx.arc(supplyStart.x, supplyStart.y, 16, 0, Math.PI * 2);
+                ctx.strokeStyle = '#f5c542'; ctx.lineWidth = 2 * invScale; ctx.stroke();
+            }
+            // 框选星区的临时高亮
+            if (sectorSelection.length > 0) {
+                sectorSelection.forEach(p => {
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
+                    ctx.strokeStyle = '#f5c542'; ctx.lineWidth = 1.5 * invScale; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+                });
+            }
+            ctx.restore();
+        }
+
+        // 鼠标坐标转换为世界坐标
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: ((e.clientX - rect.left) - view.x) / view.scale,
+                y: ((e.clientY - rect.top) - view.y) / view.scale
+            };
+        }
+
+        function getPlanetAt(x, y) {
+            for (let i = data.planets.length - 1; i >= 0; i--) {
+                const p = data.planets[i];
+                if (Math.hypot(p.x - x, p.y - y) <= (15 / view.scale)) return p;
+            }
+            return null;
+        }
+
+        document.getElementById('modeSelect').addEventListener('change', (e) => {
+            mode = e.target.value;
+            supplyStart = null;
+            sectorSelection = [];
+            const tips = { select: '🖐️ 选择/拖拽', 'add-planet': '🪐 点击空白处放置星球', 'add-supply': '🔗 依次点击两颗星球', 'add-sector': '🔲 依次点击星球来组成星区 (再次点击该模式完成)' };
+            statusBar.innerText = tips[mode];
+            draw();
+        });
+
+        // 滚轮缩放
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoom = Math.exp((e.deltaY < 0 ? 1 : -1) * 0.1);
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            view.x -= (mouseX - view.x) * (zoom - 1);
+            view.y -= (mouseY - view.y) * (zoom - 1);
+            view.scale *= zoom;
+            draw();
+        }, { passive: false });
+
+        canvas.addEventListener('mousedown', (e) => {
+            // 右键或中键平移
+            if (e.button === 1 || e.button === 2) {
+                isPanning = true;
+                panStartX = e.clientX - view.x;
+                panStartY = e.clientY - view.y;
+                e.preventDefault();
+                return;
+            }
+
+            if (e.button !== 0) return; // 只处理左键
+
+            const pos = getMousePos(e);
+            const target = getPlanetAt(pos.x, pos.y);
+
+            // 1. 如果点到了星球
+            if (target) {
+                if (mode === 'add-supply') {
+                    if (!supplyStart) supplyStart = target;
+                    else {
+                        if (supplyStart.id !== target.id) {
+                            const exists = data.supplies.some(s => (s.p1Id === supplyStart.id && s.p2Id === target.id) || (s.p1Id === target.id && s.p2Id === supplyStart.id));
+                            if (!exists) data.supplies.push({ id: Date.now().toString(), p1Id: supplyStart.id, p2Id: target.id });
+                            updateUI();
+                        }
+                        supplyStart = null;
+                    }
+                } 
+                else if (mode === 'add-sector') {
+                    if (!sectorSelection.includes(target)) {
+                        sectorSelection.push(target);
+                    } else {
+                        // 如果点已经选过的，移除
+                        sectorSelection = sectorSelection.filter(p => p.id !== target.id);
+                    }
+                } 
+                else {
+                    // 默认选择拖拽模式
+                    draggedPlanet = target;
+                    dragOffsetX = pos.x - target.x;
+                    dragOffsetY = pos.y - target.y;
+                    selectPlanet(target.id);
+                }
+            } 
+            // 2. 如果点到了空白
+            else {
+                if (mode === 'add-planet') {
+                    const newP = { id: Date.now().toString(), x: pos.x, y: pos.y, nameEn: 'New Planet', nameCn: '新星球', factionId: 'super_earth' };
+                    data.planets.push(newP);
+                    selectPlanet(newP.id);
+                    updateUI();
+                } 
+                else if (mode === 'select') {
+                    deselectPlanet();
+                }
+            }
+            draw();
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isPanning) {
+                view.x = e.clientX - panStartX;
+                view.y = e.clientY - panStartY;
+                draw();
+                return;
+            }
+            if (draggedPlanet) {
+                const pos = getMousePos(e);
+                draggedPlanet.x = pos.x - dragOffsetX;
+                draggedPlanet.y = pos.y - dragOffsetY;
+                draw();
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 1 || e.button === 2) isPanning = false;
+            if (e.button === 0 && draggedPlanet) draggedPlanet = null;
+        });
+        
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        // 退出“创建星区”模式时，结算星区
+        document.getElementById('modeSelect').addEventListener('change', (e) => {
+            if (mode === 'add-sector' && sectorSelection.length > 0) {
+                const name = prompt("星区名称:", "新星区");
+                if (name) {
+                    data.sectors.push({ id: Date.now().toString(), name, planetIds: sectorSelection.map(p => p.id) });
+                }
+            }
+        });
+
+        // --- 数据绑定 ---
+        function selectPlanet(id) {
+            selectedPlanetId = id;
+            const p = data.planets.find(x => x.id === id);
+            if (p) {
+                document.getElementById('editPlanetPanel').style.display = 'block';
+                document.getElementById('editNameEn').value = p.nameEn;
+                document.getElementById('editNameCn').value = p.nameCn;
+                document.getElementById('editFaction').value = p.factionId;
+            }
+            updateUI(); draw();
+        }
+
+        function deselectPlanet() {
+            selectedPlanetId = null;
+            document.getElementById('editPlanetPanel').style.display = 'none';
+            updateUI(); draw();
+        }
+
+        function updatePlanetData() {
+            if (!selectedPlanetId) return;
+            const p = data.planets.find(x => x.id === selectedPlanetId);
+            if (p) {
+                p.nameEn = document.getElementById('editNameEn').value;
+                p.nameCn = document.getElementById('editNameCn').value;
+                p.factionId = document.getElementById('editFaction').value;
+                updateUI(); draw();
+            }
+        }
+
+        function addFaction() {
+            const en = document.getElementById('newFactEn').value.trim();
+            const cn = document.getElementById('newFactCn').value.trim();
+            const color = document.getElementById('newFactColor').value;
+            if (!en || !cn) return alert('请填写势力中英文名');
+            data.factions.push({ id: 'fact_' + Date.now(), nameEn: en, nameCn: cn, color, fixed: false });
+            document.getElementById('newFactEn').value = '';
+            document.getElementById('newFactCn').value = '';
+            updateUI(); draw();
+        }
+
+        function deleteFaction(id) {
+            if (id === 'super_earth') return;
+            data.planets.forEach(p => { if (p.factionId === id) p.factionId = 'super_earth'; });
+            data.factions = data.factions.filter(f => f.id !== id);
+            updateUI(); draw();
+        }
+
+        function deletePlanet(id) {
+            data.planets = data.planets.filter(p => p.id !== id);
+            data.supplies = data.supplies.filter(s => s.p1Id !== id && s.p2Id !== id);
+            data.sectors.forEach(s => s.planetIds = s.planetIds.filter(pid => pid !== id));
+            data.sectors = data.sectors.filter(s => s.planetIds.length > 0);
+            if (selectedPlanetId === id) deselectPlanet();
+            updateUI(); draw();
+        }
+
+        function deleteSector(id) { data.sectors = data.sectors.filter(s => s.id !== id); updateUI(); draw(); }
+        function deleteSupply(id) { data.supplies = data.supplies.filter(s => s.id !== id); updateUI(); draw(); }
+
+        function updateUI() {
+            localStorage.setItem('starMapData', JSON.stringify(data));
+
+            const fList = document.getElementById('factionList');
+            fList.innerHTML = '';
+            data.factions.forEach(f => {
+                fList.innerHTML += `<div class="list-item"><span class="name"><span class="color-dot" style="background:${f.color}"></span>${f.nameCn}</span>${f.fixed ? '' : `<span class="delete-btn" onclick="deleteFaction('${f.id}')">✕</span>`}</div>`;
+            });
+
+            const fSelect = document.getElementById('editFaction');
+            fSelect.innerHTML = '';
+            data.factions.forEach(f => { fSelect.innerHTML += `<option value="${f.id}">${f.nameCn} (${f.nameEn})</option>`; });
+
+            const pList = document.getElementById('planetList');
+            pList.innerHTML = '';
+            data.planets.forEach(p => {
+                const f = data.factions.find(x => x.id === p.factionId) || data.factions[0];
+                pList.innerHTML += `<div class="list-item" ${p.id === selectedPlanetId ? 'style="border-color:var(--accent)"' : ''}><span class="name" onclick="selectPlanet('${p.id}')"><span class="color-dot" style="background:${f.color}"></span>${p.nameCn}</span><span class="delete-btn" onclick="deletePlanet('${p.id}')">✕</span></div>`;
+            });
+
+            const sList = document.getElementById('sectorList');
+            sList.innerHTML = '';
+            data.sectors.forEach(s => { sList.innerHTML += `<div class="list-item"><span class="name">🔲 ${s.name}</span><span class="delete-btn" onclick="deleteSector('${s.id}')">✕</span></div>`; });
+
+            const supList = document.getElementById('supplyList');
+            supList.innerHTML = '';
+            data.supplies.forEach(s => {
+                const p1 = data.planets.find(x => x.id === s.p1Id);
+                const p2 = data.planets.find(x => x.id === s.p2Id);
+                if (p1 && p2) supList.innerHTML += `<div class="list-item"><span class="name">🔗 ${p1.nameEn} ↔ ${p2.nameEn}</span><span class="delete-btn" onclick="deleteSupply('${s.id}')">✕</span></div>`;
+            });
+
+            if (selectedPlanetId) {
+                const p = data.planets.find(x => x.id === selectedPlanetId);
+                if (p) {
+                    document.getElementById('editNameEn').value = p.nameEn;
+                    document.getElementById('editNameCn').value = p.nameCn;
+                    document.getElementById('editFaction').value = p.factionId;
+                }
+            }
+        }
+
+        resize();
+        updateUI();
+    </script>
 </body>
 </html>

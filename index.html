@@ -13,7 +13,6 @@
             <h1>STAR MAP</h1>
             <p>银河系星区战略部署图</p>
         </div>
-        <!-- 快捷跳转编辑器的按钮 -->
         <a href="mapEdit.html" class="btn btn-accent" style="position:absolute; top:20px; right:20px; width:auto; z-index:10;">⚙️ 进入地图编辑器</a>
     </div>
 
@@ -22,15 +21,64 @@
     <script>
         const canvas = document.getElementById('viewCanvas');
         const ctx = canvas.getContext('2d');
+        let view = { x: 0, y: 0, scale: 1 };
+
+        function render() {
+            let savedData = localStorage.getItem('starMapData');
+            let currentData = savedData ? JSON.parse(savedData) : window.MAP_DATA;
+            drawMap(ctx, canvas.width, canvas.height, currentData, view);
+        }
 
         function resize() {
             canvas.width = canvas.parentElement.clientWidth;
             canvas.height = canvas.parentElement.clientHeight;
-            drawMap(ctx, canvas.width, canvas.height, window.MAP_DATA);
+            // 初始居中
+            if(view.x === 0 && view.y === 0) {
+                view.x = canvas.width / 2 - 400;
+                view.y = canvas.height / 2 - 400;
+            }
+            render();
         }
         
         window.addEventListener('resize', resize);
-        resize(); // 初始化
+
+        // 滚轮缩放
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoom = Math.exp((e.deltaY < 0 ? 1 : -1) * 0.1);
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            view.x -= (mouseX - view.x) * (zoom - 1);
+            view.y -= (mouseY - view.y) * (zoom - 1);
+            view.scale *= zoom;
+            render();
+        }, { passive: false });
+
+        // 拖拽平移 (右键或中键)
+        let isPanning = false, panStartX = 0, panStartY = 0;
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 1 || e.button === 2) {
+                isPanning = true;
+                panStartX = e.clientX - view.x;
+                panStartY = e.clientY - view.y;
+                e.preventDefault();
+            }
+        });
+        canvas.addEventListener('mousemove', (e) => {
+            if (isPanning) {
+                view.x = e.clientX - panStartX;
+                view.y = e.clientY - panStartY;
+                render();
+            }
+        });
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 1 || e.button === 2) isPanning = false;
+        });
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        resize();
     </script>
 </body>
 </html>
