@@ -18,48 +18,29 @@ function getConvexHull(points) {
     return lower.concat(upper);
 }
 
-// 将多边形向外扩的算法（保证形状贴合且不出圈）
-function expandPolygon(points, padding, center, maxRadius) {
-    if (points.length < 3) return points;
-    const expanded = [];
-    const len = points.length;
+// 射线与圆的交点
+function getRayCircleIntersect(start, dir, center, radius) {
+    const dx = dir.x - start.x;
+    const dy = dir.y - start.y;
+    const fx = start.x - center.x;
+    const fy = start.y - center.y;
     
-    for (let i = 0; i < len; i++) {
-        const p0 = points[(i - 1 + len) % len];
-        const p1 = points[i];
-        const p2 = points[(i + 1) % len];
-        
-        // 计算两条边的法线（朝外）
-        let n1 = { x: -(p1.y - p0.y), y: p1.x - p0.x };
-        let n2 = { x: -(p2.y - p1.y), y: p2.x - p1.x };
-        let l1 = Math.hypot(n1.x, n1.y) || 1;
-        let l2 = Math.hypot(n2.x, n2.y) || 1;
-        
-        // 归一化法线
-        n1 = { x: n1.x / l1, y: n1.y / l1 };
-        n2 = { x: n2.x / l2, y: n2.y / l2 };
-        
-        // 计算角平分线法线
-        let bisect = { x: n1.x + n2.x, y: n1.y + n2.y };
-        let bl = Math.hypot(bisect.x, bisect.y) || 1;
-        bisect = { x: bisect.x / bl, y: bisect.y / bl };
-        
-        // 计算向外扩张后的点
-        let newP = {
-            x: p1.x + bisect.x * padding,
-            y: p1.y + bisect.y * padding
-        };
-        
-        // 保证不出外圈
-        const distToCenter = Math.hypot(newP.x - center.x, newP.y - center.y);
-        if (distToCenter > maxRadius) {
-            newP.x = center.x + (newP.x - center.x) / distToCenter * maxRadius;
-            newP.y = center.y + (newP.y - center.y) / distToCenter * maxRadius;
+    const a = dx*dx + dy*dy;
+    const b = 2 * (fx*dx + fy*dy);
+    const c = fx*fx + fy*fy - radius*radius;
+    
+    let discriminant = b*b - 4*a*c;
+    if (discriminant >= 0) {
+        discriminant = Math.sqrt(discriminant);
+        let t1 = (-b - discriminant) / (2*a);
+        let t2 = (-b + discriminant) / (2*a);
+        let t = Math.max(t1, t2);
+        if (t < 0) t = Math.min(t1, t2);
+        if (t > 0) {
+            return { x: start.x + t * dx, y: start.y + t * dy };
         }
-        
-        expanded.push(newP);
     }
-    return expanded;
+    return null;
 }
 
 function drawMap(ctx, width, height, data, view) {
@@ -76,8 +57,7 @@ function drawMap(ctx, width, height, data, view) {
     const invScale = 1 / (view ? view.scale : 1);
 
     const mapCenter = { x: 0, y: 0 }; 
-    const mapRadius = 1600; 
-    const innerRadius = 150; // 中心地球区域的半径
+    const mapRadius = 1600; // 外围大圆
 
     // 1. 画最外层的圆形边界
     ctx.beginPath();
@@ -86,7 +66,7 @@ function drawMap(ctx, width, height, data, view) {
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 2. 画星区（整齐的领地边界，绝不和星球相连）
+    // 2. 画星区
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
@@ -96,28 +76,57 @@ function drawMap(ctx, width, height, data, view) {
             }
             const factionColor = getFaction(sectorFactionId).color;
 
-            // 计算凸包
-            let hull = pts.length > 2 ? getConvexHull(pts) : pts;
+            const hull = pts.length > 2 ? getConvexHull(pts) : pts;
             
-            if (hull.length >= 2) {
-                // 核心：向外扩张 50 像素，完美包裹星球且不粘连
-                hull = expandPolygon(hull, 50, mapCenter, mapRadius);
+            // 核心算法：安全外扩多边形
+            // 我们计算一个重心，然后把凸包上的点沿着重心的方向，向外推移 150 像素，保证一定包裹住所有星球
+            let centroid = { x: 0, y: 0 };
+            pts.forEach(p => { centroid.x += p.x; centroid.y += p.y; });
+            centroid.x /= pts.length;
+            centroid.y /= pts.length;
 
+            const safeHull = hull.map(p => {
+                const dx = p.x - centroid.x;
+                const dy = p.y - centroid.y;
+                const len = Math.hypot(dx, dy) || 1;
+                const pad = 120; // 强制外扩距离，如果觉得星区不够大，可以改这个数字
+                return {
+                    x: p.x + (dx / len) * pad,
+                    y: p.y + (dy / len) * pad
+                };
+            });
+
+            if (safeHull.length > 1) {
                 ctx.beginPath();
-                ctx.moveTo(hull[0].x, hull[0].y);
-                for (let i = 1; i < hull.length; i++) {
-                    ctx.lineTo(hull[i].x, hull[i].y);
+                ctx.moveTo(safeHull[0].x, safeHull[0].y);
+                for (let i = 1; i < safeHull.length; i++) {
+                    ctx.lineTo(safeHull[i].x, safeHull[i].y);
                 }
                 ctx.closePath();
                 
-                // 填充极淡的底色
-                ctx.fillStyle = factionColor + '06'; 
+                // 填充领地色
+                ctx.fillStyle = factionColor + '08';
                 ctx.fill();
                 
-                // 画出星区的边界线（白色实线，就像原图一样）
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                // 画边界实线 (纯白色，像原图一样)
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
                 ctx.lineWidth = 1 * invScale;
                 ctx.stroke();
+
+                // 将星区线延伸到最外圈大圆
+                if (safeHull.length >= 2) {
+                    safeHull.forEach(p => {
+                        const intersect = getRayCircleIntersect(p, { x: p.x - mapCenter.x, y: p.y - mapCenter.y }, mapCenter, mapRadius);
+                        if (intersect) {
+                            ctx.beginPath();
+                            ctx.moveTo(p.x, p.y);
+                            ctx.lineTo(intersect.x, intersect.y);
+                            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                            ctx.lineWidth = 1 * invScale;
+                            ctx.stroke();
+                        }
+                    });
+                }
             }
 
             // 画星区名字
@@ -126,11 +135,11 @@ function drawMap(ctx, width, height, data, view) {
             ctx.fillStyle = factionColor;
             ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(sector.name, pts[0].x, minY - 30 * invScale);
+            ctx.fillText(sector.name, centroid.x, minY - 40 * invScale);
         }
     });
 
-    // 3. 画补给线（星球之间的连线，纯实线，双色）
+    // 3. 画补给线（星球之间唯一的连线，纯实线）
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
@@ -142,19 +151,11 @@ function drawMap(ctx, width, height, data, view) {
 
             ctx.lineWidth = 1.2 * invScale;
 
-            // 前半段颜色
-            ctx.beginPath(); 
-            ctx.moveTo(p1.x, p1.y); 
-            ctx.lineTo(midX, midY);
-            ctx.strokeStyle = f1Color; 
-            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(midX, midY);
+            ctx.strokeStyle = f1Color; ctx.stroke();
 
-            // 后半段颜色
-            ctx.beginPath(); 
-            ctx.moveTo(midX, midY); 
-            ctx.lineTo(p2.x, p2.y);
-            ctx.strokeStyle = f2Color; 
-            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(midX, midY); ctx.lineTo(p2.x, p2.y);
+            ctx.strokeStyle = f2Color; ctx.stroke();
         }
     });
 
@@ -162,7 +163,6 @@ function drawMap(ctx, width, height, data, view) {
     planets.forEach(p => {
         const fColor = getFaction(p.factionId).color;
         
-        // 发光渐变
         const gradient = ctx.createRadialGradient(p.x - 2*invScale, p.y - 2*invScale, 1, p.x, p.y, 6*invScale);
         gradient.addColorStop(0, '#ffffff');
         gradient.addColorStop(0.3, fColor);
@@ -173,14 +173,12 @@ function drawMap(ctx, width, height, data, view) {
         ctx.fillStyle = gradient;
         ctx.fill();
 
-        // 外圈
         ctx.beginPath();
         ctx.arc(p.x, p.y, 8 * invScale, 0, Math.PI * 2);
         ctx.strokeStyle = fColor + 'AA';
         ctx.lineWidth = 1.5 * invScale;
         ctx.stroke();
 
-        // 文字
         ctx.fillStyle = '#e0e4e8';
         ctx.font = `${10 * invScale}px "Courier New", monospace`;
         ctx.textAlign = 'left';
