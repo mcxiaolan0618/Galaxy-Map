@@ -25,6 +25,32 @@ function getCentroid(points) {
     return { x: x / points.length, y: y / points.length };
 }
 
+// 射线与圆的交点算法（用于把星区线延伸到圆形边界）
+function getRayCircleIntersect(start, dir, center, radius) {
+    const dx = dir.x - start.x;
+    const dy = dir.y - start.y;
+    const fx = start.x - center.x;
+    const fy = start.y - center.y;
+    
+    const a = dx*dx + dy*dy;
+    const b = 2 * (fx*dx + fy*dy);
+    const c = fx*fx + fy*fy - radius*radius;
+    
+    let discriminant = b*b - 4*a*c;
+    if (discriminant >= 0) {
+        discriminant = Math.sqrt(discriminant);
+        let t1 = (-b - discriminant) / (2*a);
+        let t2 = (-b + discriminant) / (2*a);
+        // 取射线方向上的正数交点
+        let t = Math.max(t1, t2);
+        if (t < 0) t = Math.min(t1, t2);
+        if (t > 0) {
+            return { x: start.x + t * dx, y: start.y + t * dy };
+        }
+    }
+    return null;
+}
+
 function drawMap(ctx, width, height, data, view) {
     ctx.clearRect(0, 0, width, height);
     
@@ -38,110 +64,91 @@ function drawMap(ctx, width, height, data, view) {
     const getFaction = (id) => factions.find(f => f.id === id) || factions[0];
     const invScale = 1 / (view ? view.scale : 1);
 
-    // 1. 画星区（多边形领地）
+    // 定义星图中心和最大半径（固定在 (0,0)，半径为 2000 的巨圆，包裹所有星球）
+    const mapCenter = { x: 0, y: 0 }; 
+    const mapRadius = 2000;
+
+    // 1. 画最外层的圆形边界
+    ctx.beginPath();
+    ctx.arc(mapCenter.x, mapCenter.y, mapRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 2 * invScale;
+    ctx.stroke();
+
+    // 2. 画星区（线段发散切割圆）
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
             let sectorFactionId = 'super_earth';
             for (let i = 0; i < pts.length; i++) {
-                if (pts[i].factionId !== 'super_earth') {
-                    sectorFactionId = pts[i].factionId;
-                    break;
-                }
+                if (pts[i].factionId !== 'super_earth') { sectorFactionId = pts[i].factionId; break; }
             }
             const factionColor = getFaction(sectorFactionId).color;
 
-            if (pts.length === 1) {
-                // 单颗星球星区
+            // 1. 计算凸包，获取外围顶点
+            const hull = pts.length > 2 ? getConvexHull(pts) : pts;
+            const centroid = getCentroid(hull);
+
+            // 2. 将这些顶点向远离中心的方向延伸，与圆形边界相交
+            const extendedPts = hull.map(p => {
+                const intersect = getRayCircleIntersect(p, { x: p.x - centroid.x, y: p.y - centroid.y }, mapCenter, mapRadius);
+                return intersect || p;
+            });
+
+            // 3. 绘制多边形色块
+            if (extendedPts.length > 1) {
                 ctx.beginPath();
-                ctx.arc(pts[0].x, pts[0].y, 40, 0, Math.PI * 2);
-                ctx.fillStyle = factionColor + '15'; // 填充
-                ctx.fill();
-                ctx.strokeStyle = factionColor;
-                ctx.lineWidth = 1.5 * invScale;
-                ctx.setLineDash([5 * invScale, 5 * invScale]);
-                ctx.stroke();
-                ctx.setLineDash([]);
-                
-                ctx.fillStyle = factionColor;
-                ctx.font = `bold ${12 * invScale}px "Courier New", monospace`;
-                ctx.textAlign = 'center';
-                ctx.fillText(sector.name, pts[0].x, pts[0].y - 50 * invScale);
-            } else if (pts.length === 2) {
-                // 两颗星球星区（画胶囊形状）
-                const p1 = pts[0], p2 = pts[1];
-                const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-                const padding = 35;
-                
-                ctx.save();
-                ctx.translate(p1.x, p1.y);
-                ctx.rotate(angle);
-                const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-                
-                ctx.beginPath();
-                ctx.arc(0, 0, padding, Math.PI / 2, -Math.PI / 2);
-                ctx.lineTo(dist, -padding);
-                ctx.arc(dist, 0, padding, -Math.PI / 2, Math.PI / 2);
-                ctx.closePath();
-                
-                ctx.fillStyle = factionColor + '15';
-                ctx.fill();
-                ctx.strokeStyle = factionColor;
-                ctx.lineWidth = 1.5 * invScale;
-                ctx.stroke();
-                ctx.restore();
-
-                // 名字放在两颗星球中间上方
-                const midX = (p1.x + p2.x) / 2;
-                const midY = (p1.y + p2.y) / 2;
-                ctx.fillStyle = factionColor;
-                ctx.font = `bold ${12 * invScale}px "Courier New", monospace`;
-                ctx.textAlign = 'center';
-                ctx.fillText(sector.name, midX, midY - 50 * invScale);
-
-            } else {
-                // 多颗星球（凸包多边形）
-                const hull = getConvexHull(pts);
-                const centroid = getCentroid(hull);
-                const padding = 35;
-
-                // 将点向外推，形成领地边界
-                const expandedHull = hull.map(p => {
-                    const dx = p.x - centroid.x;
-                    const dy = p.y - centroid.y;
-                    const len = Math.hypot(dx, dy);
-                    if (len === 0) return { x: p.x, y: p.y };
-                    return {
-                        x: p.x + (dx / len) * padding,
-                        y: p.y + (dy / len) * padding
-                    };
-                });
-
-                ctx.beginPath();
-                for (let i = 0; i < expandedHull.length; i++) {
-                    if (i === 0) ctx.moveTo(expandedHull[i].x, expandedHull[i].y);
-                    else ctx.lineTo(expandedHull[i].x, expandedHull[i].y);
+                ctx.moveTo(extendedPts[0].x, extendedPts[0].y);
+                for (let i = 1; i < extendedPts.length; i++) {
+                    ctx.lineTo(extendedPts[i].x, extendedPts[i].y);
                 }
+                // 如果星球较少，用圆弧连接返回的边界，这里简单用直线闭合
                 ctx.closePath();
-
-                ctx.fillStyle = factionColor + '12';
+                
+                // 填充颜色
+                ctx.fillStyle = factionColor + '08'; // 非常淡的背景色
                 ctx.fill();
-                ctx.strokeStyle = factionColor;
-                ctx.lineWidth = 1.5 * invScale;
-                ctx.stroke();
-
-                // 名字放在质心上方
-                let minY = Infinity;
-                expandedHull.forEach(p => minY = Math.min(minY, p.y));
-                ctx.fillStyle = factionColor;
-                ctx.font = `bold ${12 * invScale}px "Courier New", monospace`;
-                ctx.textAlign = 'center';
-                ctx.fillText(sector.name, centroid.x, minY - 15 * invScale);
             }
+
+            // 4. 绘制内部星球之间的细线（像星座一样连接）
+            if (pts.length >= 2) {
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let i = 1; i < pts.length; i++) {
+                    ctx.lineTo(pts[i].x, pts[i].y);
+                }
+                if (pts.length > 2) ctx.closePath();
+                ctx.strokeStyle = factionColor + '80'; // 半透明连线
+                ctx.lineWidth = 1 * invScale;
+                ctx.stroke();
+            }
+
+            // 5. 绘制延伸出去的边界射线
+            ctx.strokeStyle = factionColor + '60';
+            ctx.setLineDash([4 * invScale, 4 * invScale]);
+            extendedPts.forEach(p => {
+                // 找出对应凸包上的原点，画一条虚线出去
+                const originPt = hull.find(h => getRayCircleIntersect(h, { x: h.x - centroid.x, y: h.y - centroid.y }, mapCenter, mapRadius) === p);
+                if (originPt) {
+                    ctx.beginPath();
+                    ctx.moveTo(originPt.x, originPt.y);
+                    ctx.lineTo(p.x, p.y);
+                    ctx.stroke();
+                }
+            });
+            ctx.setLineDash([]);
+
+            // 6. 星区名字
+            let minY = Infinity;
+            hull.forEach(p => minY = Math.min(minY, p.y));
+            ctx.fillStyle = factionColor;
+            ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(sector.name, centroid.x, minY - 30 * invScale);
         }
     });
 
-    // 2. 画补给线
+    // 3. 画补给线
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
@@ -163,10 +170,11 @@ function drawMap(ctx, width, height, data, view) {
         }
     });
 
-    // 3. 画星球
+    // 4. 画星球
     planets.forEach(p => {
         const fColor = getFaction(p.factionId).color;
         
+        // 发光球体渐变
         const gradient = ctx.createRadialGradient(p.x - 2*invScale, p.y - 2*invScale, 1, p.x, p.y, 6*invScale);
         gradient.addColorStop(0, '#ffffff');
         gradient.addColorStop(0.4, fColor);
@@ -177,12 +185,14 @@ function drawMap(ctx, width, height, data, view) {
         ctx.fillStyle = gradient;
         ctx.fill();
 
+        // 星球外圈
         ctx.beginPath();
         ctx.arc(p.x, p.y, 8 * invScale, 0, Math.PI * 2);
         ctx.strokeStyle = fColor;
         ctx.lineWidth = 1.5 * invScale;
         ctx.stroke();
 
+        // 文本
         ctx.fillStyle = '#e0e4e8';
         ctx.font = `${11 * invScale}px "Courier New", monospace`;
         ctx.textAlign = 'left';
