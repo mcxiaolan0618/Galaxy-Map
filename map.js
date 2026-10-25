@@ -1,3 +1,23 @@
+// 计算凸包 (Andrew's monotone chain algorithm)
+function getConvexHull(points) {
+    if (points.length <= 2) return points;
+    let sorted = points.slice().sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let lower = [];
+    for (let i = 0; i < sorted.length; i++) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], sorted[i]) <= 0) lower.pop();
+        lower.push(sorted[i]);
+    }
+    let upper = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], sorted[i]) <= 0) upper.pop();
+        upper.push(sorted[i]);
+    }
+    upper.pop();
+    lower.pop();
+    return lower.concat(upper);
+}
+
 function drawMap(ctx, width, height, data, view) {
     ctx.clearRect(0, 0, width, height);
     
@@ -12,24 +32,23 @@ function drawMap(ctx, width, height, data, view) {
     const invScale = 1 / (view ? view.scale : 1);
 
     const mapCenter = { x: 0, y: 0 }; 
-    const mapRadius = 1600; // 最外层大圆半径
-    const innerRadius = 200; // 最内层圆半径（固定值，包裹住地球）
+    const mapRadius = 1600; 
+    const innerRadius = 200; 
 
-    // 1. 画最外层的圆形边界
+    // 1. 画最外层和中心圆圈
     ctx.beginPath();
     ctx.arc(mapCenter.x, mapCenter.y, mapRadius, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 2. 画内层的圆形边界（地球所在的圈）
     ctx.beginPath();
     ctx.arc(mapCenter.x, mapCenter.y, innerRadius, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 3. 画星区（从内圈生长到外圈的完美扇形）
+    // 2. 画星区
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
@@ -39,91 +58,73 @@ function drawMap(ctx, width, height, data, view) {
             }
             const factionColor = getFaction(sectorFactionId).color;
 
-            // 计算所有星区星球的角度
-            let angles = [];
-            let maxDist = 0;
-
-            pts.forEach(p => {
+            // 1. 计算凸包
+            let hull = pts.length > 2 ? getConvexHull(pts) : pts;
+            
+            // 2. 以中心点将边界向外推移，形成安全内圈（包裹星球）
+            const expandedHull = hull.map(p => {
                 const dx = p.x - mapCenter.x;
                 const dy = p.y - mapCenter.y;
-                const dist = Math.hypot(dx, dy);
-                if (dist > maxDist) maxDist = dist;
-
-                let angle = Math.atan2(dy, dx);
-                if (angle < 0) angle += Math.PI * 2; // 映射到 0 ~ 2PI
-                angles.push(angle);
+                const len = Math.hypot(dx, dy) || 1;
+                const padding = 120; // 领地内圈的留白
+                return { x: p.x + (dx / len) * padding, y: p.y + (dy / len) * padding };
             });
 
-            angles.sort((a, b) => a - b);
+            // 3. 将内部边界点向外延伸，直到与大圆相交，形成切割射线
+            const outHull = expandedHull.map(p => {
+                const dx = p.x - mapCenter.x;
+                const dy = p.y - mapCenter.y;
+                const len = Math.hypot(dx, dy) || 1;
+                return { 
+                    x: mapCenter.x + (dx / len) * mapRadius, 
+                    y: mapCenter.y + (dy / len) * mapRadius 
+                };
+            });
 
-            // 寻找包含所有星球的最小扇形角度
-            let maxGapVal = -1;
-            let splitIndex = 0;
-            for (let i = 0; i < angles.length; i++) {
-                const next = (i + 1) % angles.length;
-                let gap = angles[next] - angles[i];
-                if (gap <= 0) gap += Math.PI * 2;
-                if (gap > maxGapVal) {
-                    maxGapVal = gap;
-                    splitIndex = next;
-                }
-            }
-
-            let minAngle = angles[splitIndex];
-            let maxAngle = angles[(splitIndex - 1 + angles.length) % angles.length];
-
-            let angleDiff = maxAngle - minAngle;
-            if (angleDiff < 0) angleDiff += Math.PI * 2;
-
-            // 如果星球靠得太近，强制给一个最小的宽度
-            if (angleDiff < 0.15) {
-                let mid = minAngle + angleDiff / 2;
-                minAngle = mid - 0.075;
-                maxAngle = mid + 0.075;
-                angleDiff = 0.15;
-            }
-
-            // 给两侧留出一点空白
-            const anglePadding = 0.08;
-            minAngle -= anglePadding;
-            maxAngle += anglePadding;
-
-            // 核心修复：内圈半径不再随星球变化，强制为 innerRadius
-            // 但如果星球长得比内圈还靠里，为了避免线穿过星球，内圈也稍微缩一点
-            // 这里保守设定内圈为 150，如果外面有星球，统一从内圈长出来
-            const r_in = innerRadius; 
-            const r_out = mapRadius; 
-
-            // 绘制多边形色块
+            // 4. 绘制多边形领地
             ctx.beginPath();
-            // 内圈弧线（贴着地球所在的圈）
-            ctx.arc(mapCenter.x, mapCenter.y, r_in, minAngle, maxAngle);
-            // 向外射线到外圈
-            ctx.arc(mapCenter.x, mapCenter.y, r_out, maxAngle, minAngle, true);
+            // 从内圈起始
+            ctx.moveTo(expandedHull[0].x, expandedHull[0].y);
+            
+            // 画内圈包边（依次连接内部边界点）
+            for (let i = 1; i < expandedHull.length; i++) {
+                ctx.lineTo(expandedHull[i].x, expandedHull[i].y);
+            }
+            
+            // 画外圈切分线（从最后一个内部点连到外部大圆，再沿着大圆边缘连到第一个点对应的外部大圆）
+            ctx.lineTo(outHull[outHull.length - 1].x, outHull[outHull.length - 1].y);
+            
+            // 沿着外圆画一段弧线闭合（为了美观，用直线连接内外点也可以）
+            ctx.lineTo(outHull[0].x, outHull[0].y);
+            
             ctx.closePath();
 
             ctx.fillStyle = factionColor + '0A'; // 极淡底色
             ctx.fill();
-            
-            // 边界线（实线）
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'; // 白色边界
             ctx.lineWidth = 1 * invScale;
             ctx.stroke();
 
-            // 绘制星区名字（放在最大半径稍远的位置）
-            const textAngle = minAngle + angleDiff / 2;
-            const textR = maxDist + 60; // 放在星球外面一点
-            const textX = mapCenter.x + Math.cos(textAngle) * textR;
-            const textY = mapCenter.y + Math.sin(textAngle) * textR;
-            
+            // 5. 额外绘制那些向外延伸的边界切割线
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; // 更淡的延伸线
+            ctx.beginPath();
+            for (let i = 0; i < expandedHull.length; i++) {
+                ctx.moveTo(expandedHull[i].x, expandedHull[i].y);
+                ctx.lineTo(outHull[i].x, outHull[i].y);
+            }
+            ctx.stroke();
+
+            // 绘制星区名字
+            let minY = Infinity;
+            pts.forEach(p => minY = Math.min(minY, p.y));
             ctx.fillStyle = factionColor;
             ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(sector.name, textX, textY);
+            ctx.fillText(sector.name, pts[0].x, minY - 40 * invScale);
         }
     });
 
-    // 4. 画补给线（实线，双色）
+    // 3. 画补给线（实线，双色）
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
@@ -143,7 +144,7 @@ function drawMap(ctx, width, height, data, view) {
         }
     });
 
-    // 5. 画星球
+    // 4. 画星球
     planets.forEach(p => {
         const fColor = getFaction(p.factionId).color;
         
