@@ -1,3 +1,10 @@
+// 将角度标准化到 [0, 2*PI]
+function normalizeAngle(a) {
+    while (a < 0) a += Math.PI * 2;
+    while (a >= Math.PI * 2) a -= Math.PI * 2;
+    return a;
+}
+
 function drawMap(ctx, width, height, data, view) {
     ctx.clearRect(0, 0, width, height);
     
@@ -28,7 +35,7 @@ function drawMap(ctx, width, height, data, view) {
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 2. 画星区（无重叠智能切割）
+    // 2. 画星区（纯扇形，彻底杜绝重叠和连线）
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
@@ -41,6 +48,7 @@ function drawMap(ctx, width, height, data, view) {
             let angles = [];
             let maxDist = 0;
 
+            // 只计算角度和距离，绝对不连内部线
             pts.forEach(p => {
                 const dx = p.x - mapCenter.x;
                 const dy = p.y - mapCenter.y;
@@ -48,12 +56,12 @@ function drawMap(ctx, width, height, data, view) {
                 if (dist > maxDist) maxDist = dist;
 
                 let angle = Math.atan2(dy, dx);
-                if (angle < 0) angle += Math.PI * 2;
-                angles.push(angle);
+                angles.push(normalizeAngle(angle));
             });
 
             angles.sort((a, b) => a - b);
 
+            // 寻找最小区间
             let maxGap = -1;
             let splitIndex = 0;
             for (let i = 0; i < angles.length; i++) {
@@ -71,25 +79,27 @@ function drawMap(ctx, width, height, data, view) {
             let angleDiff = maxAngle - minAngle;
             if (angleDiff < 0) angleDiff += Math.PI * 2;
 
-            // 默认给一个宽度
-            if (angleDiff < 0.15) {
+            // 强制最小宽度，防止变成极细的线
+            if (angleDiff < 0.25) {
                 let mid = minAngle + angleDiff / 2;
-                minAngle = mid - 0.075;
-                maxAngle = mid + 0.075;
-                angleDiff = 0.15;
+                minAngle = mid - 0.125;
+                maxAngle = mid + 0.125;
+                angleDiff = 0.25;
             }
 
             const r_in = innerRadius;
             const r_out = mapRadius;
 
-            // 绘制扇形色块
+            // 绘制纯扇形多边形，没有任何内部连线
             ctx.beginPath();
             ctx.arc(mapCenter.x, mapCenter.y, r_in, minAngle, maxAngle);
             ctx.arc(mapCenter.x, mapCenter.y, r_out, maxAngle, minAngle, true);
             ctx.closePath();
 
-            ctx.fillStyle = factionColor + '0A'; // 极淡底色
+            ctx.fillStyle = factionColor + '0A';
             ctx.fill();
+            
+            // 只有外围边界线
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
             ctx.lineWidth = 1 * invScale;
             ctx.stroke();
@@ -107,7 +117,7 @@ function drawMap(ctx, width, height, data, view) {
         }
     });
 
-    // 3. 画补给线
+    // 3. 画补给线（星球之间真正的连线）
     supplies.forEach(supply => {
         const p1 = planets.find(p => p.id === supply.p1Id);
         const p2 = planets.find(p => p.id === supply.p2Id);
