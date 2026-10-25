@@ -18,6 +18,50 @@ function getConvexHull(points) {
     return lower.concat(upper);
 }
 
+// 将多边形向外扩的算法（保证形状贴合且不出圈）
+function expandPolygon(points, padding, center, maxRadius) {
+    if (points.length < 3) return points;
+    const expanded = [];
+    const len = points.length;
+    
+    for (let i = 0; i < len; i++) {
+        const p0 = points[(i - 1 + len) % len];
+        const p1 = points[i];
+        const p2 = points[(i + 1) % len];
+        
+        // 计算两条边的法线（朝外）
+        let n1 = { x: -(p1.y - p0.y), y: p1.x - p0.x };
+        let n2 = { x: -(p2.y - p1.y), y: p2.x - p1.x };
+        let l1 = Math.hypot(n1.x, n1.y) || 1;
+        let l2 = Math.hypot(n2.x, n2.y) || 1;
+        
+        // 归一化法线
+        n1 = { x: n1.x / l1, y: n1.y / l1 };
+        n2 = { x: n2.x / l2, y: n2.y / l2 };
+        
+        // 计算角平分线法线
+        let bisect = { x: n1.x + n2.x, y: n1.y + n2.y };
+        let bl = Math.hypot(bisect.x, bisect.y) || 1;
+        bisect = { x: bisect.x / bl, y: bisect.y / bl };
+        
+        // 计算向外扩张后的点
+        let newP = {
+            x: p1.x + bisect.x * padding,
+            y: p1.y + bisect.y * padding
+        };
+        
+        // 保证不出外圈
+        const distToCenter = Math.hypot(newP.x - center.x, newP.y - center.y);
+        if (distToCenter > maxRadius) {
+            newP.x = center.x + (newP.x - center.x) / distToCenter * maxRadius;
+            newP.y = center.y + (newP.y - center.y) / distToCenter * maxRadius;
+        }
+        
+        expanded.push(newP);
+    }
+    return expanded;
+}
+
 function drawMap(ctx, width, height, data, view) {
     ctx.clearRect(0, 0, width, height);
     
@@ -32,16 +76,17 @@ function drawMap(ctx, width, height, data, view) {
     const invScale = 1 / (view ? view.scale : 1);
 
     const mapCenter = { x: 0, y: 0 }; 
-    const mapRadius = 1600; // 星图最大边界
+    const mapRadius = 1600; 
+    const innerRadius = 150; // 中心地球区域的半径
 
     // 1. 画最外层的圆形边界
     ctx.beginPath();
     ctx.arc(mapCenter.x, mapCenter.y, mapRadius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 2 * invScale;
     ctx.stroke();
 
-    // 2. 画星区（纯粹的领地几何切块，不连星球）
+    // 2. 画星区（整齐的领地边界，绝不和星球相连）
     sectors.forEach(sector => {
         const pts = sector.planetIds.map(id => planets.find(p => p.id === id)).filter(p => p);
         if (pts.length > 0) {
@@ -51,52 +96,37 @@ function drawMap(ctx, width, height, data, view) {
             }
             const factionColor = getFaction(sectorFactionId).color;
 
-            // 计算该星区星球的外轮廓点（加一点留白）
-            const hull = pts.length > 2 ? getConvexHull(pts) : pts;
-            // 将点向外推移，让星区包围星球，但不直接穿过星球
-            const paddedHull = hull.map(p => {
-                const dx = p.x - mapCenter.x;
-                const dy = p.y - mapCenter.y;
-                const len = Math.hypot(dx, dy) || 1;
-                const pad = 60; 
-                return { x: p.x + (dx / len) * pad, y: p.y + (dy / len) * pad };
-            });
+            // 计算凸包
+            let hull = pts.length > 2 ? getConvexHull(pts) : pts;
+            
+            if (hull.length >= 2) {
+                // 核心：向外扩张 50 像素，完美包裹星球且不粘连
+                hull = expandPolygon(hull, 50, mapCenter, mapRadius);
 
-            // 绘制星区多边形
-            if (paddedHull.length > 2) {
                 ctx.beginPath();
-                ctx.moveTo(paddedHull[0].x, paddedHull[0].y);
-                for (let i = 1; i < paddedHull.length; i++) {
-                    ctx.lineTo(paddedHull[i].x, paddedHull[i].y);
+                ctx.moveTo(hull[0].x, hull[0].y);
+                for (let i = 1; i < hull.length; i++) {
+                    ctx.lineTo(hull[i].x, hull[i].y);
                 }
                 ctx.closePath();
                 
-                // 星区底色（极淡）
-                ctx.fillStyle = factionColor + '08';
+                // 填充极淡的底色
+                ctx.fillStyle = factionColor + '06'; 
                 ctx.fill();
                 
-                // 星区边界线（实线，几何状）
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-                ctx.lineWidth = 1 * invScale;
-                ctx.stroke();
-            } else if (paddedHull.length > 0) {
-                // 单颗星球的星区画个圆
-                ctx.beginPath();
-                ctx.arc(paddedHull[0].x, paddedHull[0].y, 60, 0, Math.PI * 2);
-                ctx.fillStyle = factionColor + '08';
-                ctx.fill();
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+                // 画出星区的边界线（白色实线，就像原图一样）
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
                 ctx.lineWidth = 1 * invScale;
                 ctx.stroke();
             }
 
-            // 绘制星区名字
+            // 画星区名字
             let minY = Infinity;
             pts.forEach(p => minY = Math.min(minY, p.y));
             ctx.fillStyle = factionColor;
             ctx.font = `bold ${12 * invScale}px "Microsoft YaHei", sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(sector.name, pts[0].x, minY - 40 * invScale);
+            ctx.fillText(sector.name, pts[0].x, minY - 30 * invScale);
         }
     });
 
@@ -111,7 +141,6 @@ function drawMap(ctx, width, height, data, view) {
             const midY = (p1.y + p2.y) / 2;
 
             ctx.lineWidth = 1.2 * invScale;
-            // 不再使用虚线，像原图一样使用实线
 
             // 前半段颜色
             ctx.beginPath(); 
@@ -133,7 +162,7 @@ function drawMap(ctx, width, height, data, view) {
     planets.forEach(p => {
         const fColor = getFaction(p.factionId).color;
         
-        // 星球发光渐变
+        // 发光渐变
         const gradient = ctx.createRadialGradient(p.x - 2*invScale, p.y - 2*invScale, 1, p.x, p.y, 6*invScale);
         gradient.addColorStop(0, '#ffffff');
         gradient.addColorStop(0.3, fColor);
@@ -144,7 +173,7 @@ function drawMap(ctx, width, height, data, view) {
         ctx.fillStyle = gradient;
         ctx.fill();
 
-        // 外圈轮廓
+        // 外圈
         ctx.beginPath();
         ctx.arc(p.x, p.y, 8 * invScale, 0, Math.PI * 2);
         ctx.strokeStyle = fColor + 'AA';
@@ -156,10 +185,6 @@ function drawMap(ctx, width, height, data, view) {
         ctx.font = `${10 * invScale}px "Courier New", monospace`;
         ctx.textAlign = 'left';
         ctx.fillText(p.nameEn, p.x + (12 * invScale), p.y - (2 * invScale));
-        
-        ctx.fillStyle = '#8a94a0';
-        ctx.font = `${9 * invScale}px "Microsoft YaHei", sans-serif`;
-        ctx.fillText(p.nameCn, p.x + (12 * invScale), p.y + (10 * invScale));
     });
 
     ctx.restore();
