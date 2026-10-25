@@ -28,7 +28,7 @@
                     <option value="add-sector">🔲 创建星区</option>
                 </select>
                 <button id="finishSectorBtn" class="btn btn-accent" style="display:none; margin-top:10px;" onclick="finishSector()">💾 完成星区创建</button>
-                <p style="font-size:11px; color:#6a7480; margin-top:8px;">按住右键可以平移，滚轮缩放。</p>
+                <p style="font-size:11px; color:#6a7480; margin-top:8px;">按住右键平移，滚轮缩放。</p>
             </div>
 
             <!-- 正在编辑星球 -->
@@ -43,7 +43,7 @@
                 <button class="btn btn-small" onclick="deselectPlanet()">完成编辑</button>
             </div>
 
-            <!-- 正在编辑星区 (新增) -->
+            <!-- 正在编辑星区 -->
             <div class="control-group" id="editSectorPanel" style="display:none; border-color: #87CEEB;">
                 <h2 style="color: #87CEEB;">正在编辑星区</h2>
                 <div class="field"><label>星区名称</label><input type="text" id="editSectorName" oninput="updateSectorData()"></div>
@@ -81,6 +81,13 @@
                     <div class="field" style="flex: 0.5;"><button class="btn" style="margin:0; height:33px;" onclick="addFaction()">添加</button></div>
                 </div>
             </div>
+
+            <!-- 导出数据 -->
+            <div class="control-group">
+                <h2>数据保存</h2>
+                <button class="btn btn-primary" onclick="exportData()">💾 导出 data.js 文件</button>
+                <p style="font-size:11px; color:#6a7480; margin-top:8px;">编辑会自动保存在浏览器。如果想彻底应用到代码或发给别人，请点击上方按钮下载，并覆盖原 data.js。</p>
+            </div>
         </div>
     </div>
 
@@ -91,7 +98,9 @@
         const ctx = canvas.getContext('2d');
         const statusBar = document.getElementById('statusBar');
         
-        let data = window.MAP_DATA; 
+        // 优先从浏览器读取之前保存的数据，如果没有则使用 data.js 的默认数据
+        let data = JSON.parse(localStorage.getItem('starMapData')) || window.MAP_DATA; 
+        
         let width, height;
         let view = { x: 0, y: 0, scale: 1 };
         let mode = 'select';
@@ -99,11 +108,10 @@
         let draggedPlanet = null;
         let dragOffsetX = 0, dragOffsetY = 0;
         let selectedPlanetId = null;
-        let selectedSectorId = null; // 当前选中的星区
+        let selectedSectorId = null; 
         let supplyStart = null;
         
         let sectorSelection = []; 
-
         let isPanning = false, panStartX = 0, panStartY = 0;
 
         function resize() {
@@ -111,9 +119,8 @@
             canvas.height = canvas.parentElement.clientHeight;
             width = canvas.width;
             height = canvas.height;
-            // 初始化居中
             if(view.x === 0 && view.y === 0) {
-                view.x = width / 2;
+                view.x = width / 2; // 居中
                 view.y = height / 2;
             }
             draw();
@@ -128,7 +135,6 @@
             ctx.scale(view.scale, view.scale);
             const invScale = 1 / view.scale;
 
-            // 绘制星球选中高亮
             if (selectedPlanetId) {
                 const p = data.planets.find(x => x.id === selectedPlanetId);
                 if (p) {
@@ -136,12 +142,10 @@
                     ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2 * invScale; ctx.stroke();
                 }
             }
-            // 连线的临时高亮
             if (supplyStart) {
                 ctx.beginPath(); ctx.arc(supplyStart.x, supplyStart.y, 16 * invScale, 0, Math.PI * 2);
                 ctx.strokeStyle = '#f5c542'; ctx.lineWidth = 2 * invScale; ctx.stroke();
             }
-            // 框选星区的临时高亮
             if (sectorSelection.length > 0) {
                 sectorSelection.forEach(p => {
                     ctx.beginPath(); ctx.arc(p.x, p.y, 14 * invScale, 0, Math.PI * 2);
@@ -172,8 +176,7 @@
             supplyStart = null;
             sectorSelection = [];
             document.getElementById('finishSectorBtn').style.display = (mode === 'add-sector') ? 'block' : 'none';
-            
-            const tips = { select: '🖐️ 选择/拖拽', 'add-planet': '🪐 点击空白处放置星球', 'add-supply': '🔗 依次点击两颗星球', 'add-sector': '🔲 依次点击星球加入星区' };
+            const tips = { select: '🖐️ 选择/拖拽', 'add-planet': '🪐 点击空白处放置', 'add-supply': '🔗 依次点击两颗星球', 'add-sector': '🔲 依次点击星球加入星区' };
             statusBar.innerText = tips[mode];
             draw();
         });
@@ -199,7 +202,6 @@
                 e.preventDefault();
                 return;
             }
-
             if (e.button !== 0) return; 
 
             const pos = getMousePos(e);
@@ -218,11 +220,8 @@
                     }
                 } 
                 else if (mode === 'add-sector') {
-                    if (!sectorSelection.includes(target)) {
-                        sectorSelection.push(target);
-                    } else {
-                        sectorSelection = sectorSelection.filter(p => p.id !== target.id);
-                    }
+                    if (!sectorSelection.includes(target)) sectorSelection.push(target);
+                    else sectorSelection = sectorSelection.filter(p => p.id !== target.id);
                 } 
                 else {
                     draggedPlanet = target;
@@ -269,11 +268,8 @@
         canvas.addEventListener('contextmenu', e => e.preventDefault());
 
         function finishSector() {
-            if (sectorSelection.length === 0) {
-                alert("你还没有选择任何星球！");
-                return;
-            }
-            const name = prompt("请输入星区名称:", "新星区");
+            if (sectorSelection.length === 0) return alert("你还没有选择任何星球！");
+            const name = prompt("星区名称:", "新星区");
             if (name) {
                 data.sectors.push({ id: Date.now().toString(), name, planetIds: sectorSelection.map(p => p.id) });
                 updateUI();
@@ -282,10 +278,10 @@
             draw();
         }
 
-        // --- 星球编辑 ---
+        // --- 数据绑定与编辑 ---
         function selectPlanet(id) {
             selectedPlanetId = id;
-            selectedSectorId = null; // 互斥
+            selectedSectorId = null; 
             document.getElementById('editSectorPanel').style.display = 'none';
             
             const p = data.planets.find(x => x.id === id);
@@ -315,10 +311,9 @@
             }
         }
 
-        // --- 星区编辑 ---
         function selectSector(id) {
             selectedSectorId = id;
-            selectedPlanetId = null; // 互斥
+            selectedPlanetId = null; 
             document.getElementById('editPlanetPanel').style.display = 'none';
 
             const s = data.sectors.find(x => x.id === id);
@@ -356,19 +351,14 @@
                     tag.innerText = p.nameCn + ' ✕';
                     tag.onclick = () => {
                         sector.planetIds = sector.planetIds.filter(id => id !== pid);
-                        if (sector.planetIds.length === 0) {
-                            deleteSector(sector.id);
-                        } else {
-                            renderSectorTags(sector);
-                            updateUI(); draw();
-                        }
+                        if (sector.planetIds.length === 0) deleteSector(sector.id);
+                        else { renderSectorTags(sector); updateUI(); draw(); }
                     };
                     container.appendChild(tag);
                 }
             });
         }
 
-        // --- 势力与删除 ---
         function addFaction() {
             const en = document.getElementById('newFactEn').value.trim();
             const cn = document.getElementById('newFactCn').value.trim();
@@ -401,9 +391,12 @@
             if (selectedSectorId === id) deselectSector();
             updateUI(); draw(); 
         }
+        
         function deleteSupply(id) { data.supplies = data.supplies.filter(s => s.id !== id); updateUI(); draw(); }
 
+        // --- 核心：更新并保存 ---
         function updateUI() {
+            // 每次修改，立刻将数据存入浏览器 localStorage 备份
             localStorage.setItem('starMapData', JSON.stringify(data));
 
             const fList = document.getElementById('factionList');
@@ -440,15 +433,23 @@
                 const p2 = data.planets.find(x => x.id === s.p2Id);
                 if (p1 && p2) supList.innerHTML += `<div class="list-item"><span class="name">🔗 ${p1.nameEn} ↔ ${p2.nameEn}</span><span class="delete-btn" onclick="deleteSupply('${s.id}')">✕</span></div>`;
             });
+        }
 
-            if (selectedPlanetId) {
-                const p = data.planets.find(x => x.id === selectedPlanetId);
-                if (p) {
-                    document.getElementById('editNameEn').value = p.nameEn;
-                    document.getElementById('editNameCn').value = p.nameCn;
-                    document.getElementById('editFaction').value = p.factionId;
-                }
-            }
+        // --- 导出文件 ---
+        function exportData() {
+            // 生成符合 data.js 格式的代码
+            const jsContent = `// 自动生成的数据文件\nconst DEFAULT_DATA = ${JSON.stringify(data, null, 4)};\n\nwindow.MAP_DATA = JSON.parse(JSON.stringify(DEFAULT_DATA));`;
+            
+            const blob = new Blob([jsContent], { type: 'text/javascript;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'data.js';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            alert('已下载新的 data.js！\n\n请将这个文件覆盖到你网站的目录下，其他人访问时就能看到你修改的星图了。');
         }
 
         resize();
